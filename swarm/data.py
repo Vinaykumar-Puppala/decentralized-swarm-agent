@@ -35,6 +35,20 @@ def load_table(source, name=None):
     raise ValueError(f"Unsupported file type: {name}")
 
 
+def load_tables(source, name=None):
+    """Load a file into {table_name: DataFrame}. Excel workbooks yield one table per non-empty sheet."""
+    name = name or getattr(source, 'name', None) or str(source)
+    stem = Path(name).stem
+    if not name.lower().endswith(('.xlsx', '.xlsm', '.xls')):
+        return {stem: load_table(source, name)}
+    data = source if isinstance(source, (str, Path)) else io.BytesIO(source.getvalue() if hasattr(source, 'getvalue') else source.read())
+    sheets = pd.read_excel(data, sheet_name=None, keep_default_na=False, na_values=NA_VALUES)
+    sheets = {k: v for k, v in sheets.items() if not v.dropna(how='all').empty}
+    if len(sheets) == 1:
+        return {stem: next(iter(sheets.values()))}
+    return {f"{stem}/{k}": v for k, v in sheets.items()}
+
+
 def clean(df):
     """Light, reversible-in-spirit cleaning. Returns (clean_df, notes) where notes list every change made."""
     notes = []
@@ -48,7 +62,7 @@ def clean(df):
     blank = df.isna().all(axis=1)
     if blank.any():
         notes.append(f"Dropped {int(blank.sum())} fully blank rows")
-        df = df[~blank].reset_index(drop=True)
+        df = df[~blank]
 
     for c in text_columns(df):
         s = df[c]
@@ -56,7 +70,10 @@ def clean(df):
         n_ws = int((stripped != s).sum() - (s.isna() & stripped.isna()).sum())
         # Unify values that differ only by case: map each lowercase key to its most common spelling.
         lower = stripped.map(lambda v: v.lower() if isinstance(v, str) else v)
-        canon = stripped.groupby(lower).agg(lambda x: x.value_counts().index[0])
+        def _canon(x):
+            vc = x.value_counts()   # most common spelling; on ties prefer mixed-case ("France") over "france"/"FRANCE"
+            return sorted(vc.index, key=lambda v: (-vc[v], v.islower() or v.isupper()))[0]
+        canon = stripped.groupby(lower).agg(_canon)
         unified = lower.map(lambda v: canon.get(v, v) if isinstance(v, str) else v)
         n_case = int((unified != stripped).sum() - (stripped.isna() & unified.isna()).sum())
         if n_ws or n_case:
@@ -69,7 +86,7 @@ def clean(df):
             if len(s) and s.between(20000, 60000).all():  # Excel serial day numbers (1954-2064)
                 df[c] = pd.to_datetime(df[c], unit='D', origin='1899-12-30')
                 notes.append(f"Column '{c}': converted Excel serial numbers to dates")
-    return df, notes
+    return df.reset_index(drop=True), notes
 
 
 def profile(raw, df, notes, max_cats=25):
@@ -109,8 +126,17 @@ class Dataset:
         name = name or getattr(source, 'name', None) or Path(str(source)).name
         return cls(load_table(source, name), name)
 
+    @property
+    def tables(self):
+        return {self.name: self}
+
     def query(self, spec):
         return run_query(self.df, spec)
+
+    def read_rows(self, spec):
+        """-> (text, table_name, row_ids)"""
+        text, ids = read_rows(self.df, spec)
+        return text, self.name, ids
 
 
 def _col(df, c):
@@ -123,22 +149,8 @@ def _col(df, c):
     return c
 
 
-def run_query(df, spec):
-    """Execute a declarative query.
-
-    spec = {
-      "filters":  [{"column": "Country", "op": "==", "value": "France"}],
-      "derive":   [{"name": "check", "left": "Sales", "op": "-", "right": "COGS"}],  # + - * /; right may be a number
-      "group_by": ["Segment"],
-      "metrics":  [{"column": "Profit", "agg": "sum"}],            # output column "Profit_sum"
-      "ratios":   [{"name": "margin", "numerator": "Profit_sum", "denominator": "Sales_sum"}],
-      "sort_by":  "Profit_sum", "ascending": false, "limit": 10
-    }
-    Also: {"correlation": ["Units Sold", "Profit", ...]} returns a correlation matrix.
-    Returns a text table (at most MAX_ROWS rows).
-    """
-    if not isinstance(spec, dict):
-        raise ValueError("data_query must be a JSON object")
+def apply_derive_filters(df, spec):
+    """Apply spec['derive'] (computed columns) then spec['filters'] and return the resulting frame."""
     d = df
     for dv in spec.get('derive') or []:
         name, op = dv.get('name'), dv.get('op')
@@ -162,6 +174,26 @@ def run_query(df, spec):
                 'not in': lambda: ~s.isin(v if isinstance(v, list) else [v]),
                 'contains': lambda: s.astype(str).str.contains(str(v), case=False, na=False)}[op]()
         d = d[mask]
+    return d
+
+
+def run_query(df, spec):
+    """Execute a declarative query.
+
+    spec = {
+      "filters":  [{"column": "Country", "op": "==", "value": "France"}],
+      "derive":   [{"name": "check", "left": "Sales", "op": "-", "right": "COGS"}],  # + - * /; right may be a number
+      "group_by": ["Segment"],
+      "metrics":  [{"column": "Profit", "agg": "sum"}],            # output column "Profit_sum"
+      "ratios":   [{"name": "margin", "numerator": "Profit_sum", "denominator": "Sales_sum"}],
+      "sort_by":  "Profit_sum", "ascending": false, "limit": 10
+    }
+    Also: {"correlation": ["Units Sold", "Profit", ...]} returns a correlation matrix.
+    Returns a text table (at most MAX_ROWS rows).
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("data_query must be a JSON object")
+    d = apply_derive_filters(df, spec)
 
     if spec.get('correlation'):
         cols = [_col(d, c) for c in spec['correlation']]
@@ -206,3 +238,91 @@ def run_query(df, spec):
     res[num_cols] = res[num_cols].round(2)
     head = f"Query result ({total} rows{', showing ' + str(limit) if total > limit else ''}; {len(d)} source rows after filters):\n"
     return head + res.to_string(index=False)
+
+
+ROW_LIMIT = 100
+
+
+def read_rows(df, spec):
+    """Row-level access. spec = {"filters": [...], "derive": [...], "sort_by": col, "ascending": true,
+    "columns": [...], "offset": 0, "limit": 50}. Returns (text, row_ids). row_ids are stable ids of the
+    cleaned table (column `_row`), so the swarm can track which rows have been looked at."""
+    if not isinstance(spec, dict):
+        raise ValueError("data_rows must be a JSON object")
+    d = apply_derive_filters(df, spec)
+    if spec.get('sort_by'):
+        d = d.sort_values(_col(d, spec['sort_by']), ascending=bool(spec.get('ascending', True)), kind='stable')
+    cols = [_col(d, c) for c in spec['columns']] if spec.get('columns') else list(d.columns)
+    offset = max(int(spec.get('offset') or 0), 0)
+    limit = max(1, min(int(spec.get('limit') or 50), ROW_LIMIT))
+    page = d.iloc[offset:offset + limit]
+    out = page[cols].copy()
+    for c in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[c]):
+            out[c] = out[c].dt.strftime('%Y-%m-%d')
+    csv = out.to_csv(index_label='_row', float_format='%.10g')
+    if not len(page):
+        return f"No rows at offset {offset} ({len(d)} rows match).\n", []
+    more = 'no more rows after this page' if offset + limit >= len(d) else f'next page: offset {offset + limit}'
+    head = (f"ROWS {offset}-{offset + len(page) - 1} of {len(d)} matching (table has {len(df)} rows; {more}). "
+            "CSV, first column _row is the row id:\n")
+    return head + csv, [int(i) for i in page.index]
+
+
+class DataCollection:
+    """One or more tables (files / Excel sheets). Duck-types Dataset: .name, .profile, .query(spec)."""
+
+    def __init__(self, tables):
+        if not tables:
+            raise ValueError("no tables")
+        self.tables = dict(tables)            # name -> Dataset
+        self.name = ", ".join(self.tables)
+        self.profile = self._profile()
+
+    @classmethod
+    def from_sources(cls, sources):
+        """sources: iterable of (file-like-or-path, filename)."""
+        tables = {}
+        for src, fname in sources:
+            for tname, raw in load_tables(src, fname).items():
+                base, n = tname, 2
+                while tname in tables:
+                    tname, n = f"{base}_{n}", n + 1
+                tables[tname] = Dataset(raw, tname)
+        return cls(tables)
+
+    def _profile(self):
+        parts = []
+        if len(self.tables) > 1:
+            parts.append(f"{len(self.tables)} SEPARATE TABLES (not joined): {', '.join(repr(t) for t in self.tables)}. "
+                         "Every data_query / data_rows call must set \"table\".")
+        for t, ds in self.tables.items():
+            parts.append(f"===== TABLE '{t}' =====\n{ds.profile}")
+        return "\n\n".join(parts)
+
+    def _get(self, name):
+        if name is None:
+            if len(self.tables) == 1:
+                return next(iter(self.tables.values()))
+            raise ValueError(f"query must set \"table\"; available: {list(self.tables)}")
+        if name in self.tables:
+            return self.tables[name]
+        m = {k.lower().strip(): v for k, v in self.tables.items()}.get(str(name).lower().strip())
+        if m is None:
+            raise ValueError(f"Unknown table {name!r}. Available: {list(self.tables)}")
+        return m
+
+    def query(self, spec):
+        if not isinstance(spec, dict):
+            raise ValueError("data_query must be a JSON object")
+        spec = dict(spec)
+        df = self._get(spec.pop('table', None)).df
+        return run_query(df, spec)
+
+    def read_rows(self, spec):
+        if not isinstance(spec, dict):
+            raise ValueError("data_rows must be a JSON object")
+        spec = dict(spec)
+        ds = self._get(spec.pop('table', None))
+        text, ids = read_rows(ds.df, spec)
+        return text, ds.name, ids

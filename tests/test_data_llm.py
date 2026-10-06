@@ -83,3 +83,70 @@ def test_config_from_env(monkeypatch):
 
 def test_response_text_handles_content_blocks():
     assert response_text(AIMessage(content=[{'type': 'text', 'text': 'a'}, {'type': 'tool_use'}, 'b'])) == 'ab'
+
+
+def _csv(name, text):
+    f = Upload(text.encode()); f.name = name
+    return f
+
+
+def test_collection_multi_file_and_excel_sheets(tmp_path):
+    from swarm.data import DataCollection
+    xl = tmp_path / 'book.xlsx'
+    with pd.ExcelWriter(xl) as w:
+        pd.DataFrame({'Country': ['France', 'Spain'], 'Target': [100, 50]}).to_excel(w, sheet_name='targets', index=False)
+        pd.DataFrame({'x': [1]}).to_excel(w, sheet_name='other', index=False)
+        pd.DataFrame().to_excel(w, sheet_name='empty', index=False)
+    dc = DataCollection.from_sources([
+        (_csv('sales.csv', 'Country,Sales\nfrance,10\nFrance,20\nSpain,5\n'), 'sales.csv'),
+        (str(xl), 'book.xlsx'),
+        (_csv('sales.csv', 'Country,Sales\nItaly,1\n'), 'sales.csv'),     # duplicate name gets a suffix
+    ])
+    assert list(dc.tables) == ['sales', 'book/targets', 'book/other', 'sales_2']   # empty sheet skipped
+    assert 'SEPARATE TABLES' in dc.profile and 'join' not in dc.profile.lower().replace('joined', '')
+    # tables stay independent: each is queried on its own, and a join request is simply not part of the spec
+    assert any(l.split() == ['France', '30'] for l in dc.query({'table': 'sales', 'group_by': ['Country'],
+                                                              'metrics': [{'column': 'Sales', 'agg': 'sum'}]}).splitlines())
+    assert 'Target_max' in dc.query({'table': 'book/targets', 'metrics': [{'column': 'Target', 'agg': 'max'}]})
+    with pytest.raises(ValueError, match='must set'):
+        dc.query({'metrics': [{'column': 'Sales', 'agg': 'sum'}]})
+    with pytest.raises(ValueError, match='Unknown table'):
+        dc.query({'table': 'nope'})
+    single = DataCollection.from_sources([(_csv('a.csv', 'v\n1\n2\n'), 'a.csv')])
+    assert single.query({'metrics': [{'column': 'v', 'agg': 'sum'}]}).split()[-1] == '3'
+
+
+def test_read_rows_paging_filters_and_ids():
+    from swarm.data import DataCollection
+    nl = chr(10)
+    f = _csv('t.csv', 'Name,Amt' + nl + ''.join(f'n{i},{i * 10}' + nl for i in range(10)))
+    dc = DataCollection.from_sources([(f, 't.csv'), (_csv('u.csv', 'a' + nl + '1' + nl), 'u.csv')])
+    text, table, ids = dc.read_rows({'table': 't', 'offset': 0, 'limit': 4})
+    assert table == 't' and ids == [0, 1, 2, 3] and 'next page: offset 4' in text and '3,n3,30' in text.splitlines()
+    text, _, ids = dc.read_rows({'table': 't', 'offset': 8, 'limit': 4})
+    assert ids == [8, 9] and 'no more rows' in text
+    _, _, ids = dc.read_rows({'table': 't', 'filters': [{'column': 'amt', 'op': '>=', 'value': 70}], 'sort_by': 'Amt', 'ascending': False})
+    assert ids == [9, 8, 7]                                   # ids are original row ids, not positions in the result
+    text, _, ids = dc.read_rows({'table': 't', 'columns': ['Amt'], 'limit': 1000})
+    assert len(ids) == 10 and text.splitlines()[1] == '_row,Amt'
+    assert dc.read_rows({'table': 't', 'offset': 99})[2] == []
+    with pytest.raises(ValueError, match='must set'):
+        dc.read_rows({'offset': 0})
+
+
+def test_every_row_of_sample_file_is_readable_in_pages():
+    ds = Dataset.from_source('Financial_Sample_Data.xlsx')
+    seen = []
+    for off in range(0, 704, 100):
+        text, _, ids = ds.read_rows({'offset': off, 'limit': 100})
+        seen += ids
+    assert seen == list(range(704))
+    assert 'ROWS 0-99 of 704' in ds.read_rows({'limit': 100})[0]
+
+
+def test_range_helpers():
+    from swarm.workspace import merge_ranges, missing_ranges, to_ranges
+    assert to_ranges([5, 3, 4, 9, 3]) == [[3, 5], [9, 9]]
+    assert merge_ranges([[0, 4], [3, 8], [20, 21]]) == [[0, 8], [20, 21]]
+    assert missing_ranges([[2, 4], [8, 9]], 12) == [[0, 1], [5, 7], [10, 11]]
+    assert missing_ranges([[0, 11]], 12) == [] and missing_ranges([], 3) == [[0, 2]]

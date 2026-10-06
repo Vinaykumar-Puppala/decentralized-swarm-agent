@@ -1,4 +1,4 @@
-import random
+import random, threading
 from concurrent.futures import ThreadPoolExecutor
 from langchain_core.messages import SystemMessage, HumanMessage
 from .agent import run_agent
@@ -29,32 +29,66 @@ def synthesize(ws, objective, llm_cfg, budget=40000):
     return response_text(make_llm(llm_cfg).invoke([SystemMessage(content=REPORTER), HumanMessage(content=prompt)]))
 
 
-def run(objective, llm_cfg=None, n_agents=5, steps=6, db_path='workspace.sqlite', dataset=None,
-        do_synthesis=True, max_start_jitter=3.0):
-    """Run one experiment in its own run_id. Returns {'run_id', 'results', 'final_report'}.
-    Agents start with a small random delay so they don't all act on an identical empty workspace."""
-    llm_cfg = (llm_cfg or LLMConfig.from_env()).validate()
-    base = Workspace(db_path)
-    config = {'llm': llm_cfg.public(), 'n_agents': n_agents, 'steps': steps,
-              'dataset': getattr(dataset, 'name', None)}
-    ws = base.start_run(objective, config)
+def _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter):
+    """Run all agents for an already-created run, then (optionally) the observer report. Never raises."""
     try:
         with ThreadPoolExecutor(max_workers=n_agents) as ex:
             futures = [ex.submit(run_agent, f'agent-{i + 1}', objective, ws, llm_cfg, steps, dataset,
                                  random.uniform(0, max_start_jitter) if i else 0.0)
                        for i in range(n_agents)]
             results = [f.result() for f in futures]  # run_agent never raises
+        cancelled = ws.is_cancelled()
         report = None
-        if do_synthesis:
+        if do_synthesis and not cancelled:
             try:
+                ws.trace('reporter', 'step_started', {'step': 'report'})
                 report = synthesize(ws, objective, llm_cfg)
+                ws.trace('reporter', 'run_finished', {'steps': 'report', 'done': True})
             except Exception as e:
                 ws.trace('reporter', 'error', {'error': f"{type(e).__name__}: {e}"})
         failed = sum(1 for r in results if r.get('error'))
-        ws.finish_run('finished' if not failed else f'finished ({failed} agent(s) failed)', report)
+        ws.finish_run('cancelled' if cancelled else 'finished' if not failed else f'finished ({failed} agent(s) failed)', report)
         return {'run_id': ws.run_id, 'results': results, 'final_report': report}
-    except BaseException:
+    except BaseException as e:
+        ws.trace('experiment', 'run_failed', {'error': f"{type(e).__name__}: {e}"})
         ws.finish_run('crashed')
         raise
+
+
+def _setup(objective, llm_cfg, n_agents, steps, db_path, dataset):
+    llm_cfg = (llm_cfg or LLMConfig.from_env()).validate()
+    base = Workspace(db_path)
+    config = {'llm': llm_cfg.public(), 'n_agents': n_agents, 'steps': steps,
+              'dataset': getattr(dataset, 'name', None),
+              'tables': {n: len(d.df) for n, d in dataset.tables.items()} if dataset is not None else {}}
+    return base, base.start_run(objective, config), llm_cfg
+
+
+def run(objective, llm_cfg=None, n_agents=5, steps=6, db_path='workspace.sqlite', dataset=None,
+        do_synthesis=True, max_start_jitter=3.0):
+    """Blocking run in its own run_id. Returns {'run_id', 'results', 'final_report'}.
+    Agents start with a small random delay so they don't all act on an identical empty workspace."""
+    base, ws, llm_cfg = _setup(objective, llm_cfg, n_agents, steps, db_path, dataset)
+    try:
+        return _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter)
     finally:
         base.close()
+
+
+def launch(objective, llm_cfg=None, n_agents=5, steps=6, db_path='workspace.sqlite', dataset=None,
+           do_synthesis=True, max_start_jitter=3.0):
+    """Non-blocking: start the run in a background thread and return (run_id, thread) immediately,
+    so a UI can poll the workspace while agents work."""
+    base, ws, llm_cfg = _setup(objective, llm_cfg, n_agents, steps, db_path, dataset)
+
+    def target():
+        try:
+            _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter)
+        except BaseException:
+            pass  # already recorded as a run_failed trace
+        finally:
+            base.close()
+
+    t = threading.Thread(target=target, name=f'run-{ws.run_id}', daemon=True)
+    t.start()
+    return ws.run_id, t

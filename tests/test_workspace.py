@@ -43,3 +43,13 @@ def test_migrates_v1_schema(tmp_path):
     w = Workspace(p).start_run('o')
     w.artifact('agent-1', 'n', 'c')
     assert len(w.snapshot()['artifacts']) == 1 and w.recent_board() == []   # old untagged rows don't leak in
+
+
+def test_timestamps_strictly_increase_across_views_and_tables(tmp_path):
+    base = Workspace(tmp_path / 'x.sqlite')
+    a, b = base.start_run('a'), base.start_run('b')
+    for i in range(200):
+        (a if i % 2 else b).trace('agent-1', 'e', {'i': i})
+        (b if i % 2 else a).board('agent-1', 'k', str(i))
+    stamps = [r[1] for r in a.snapshot()['traces'] + a.snapshot()['board'] + b.snapshot()['traces'] + b.snapshot()['board']]
+    assert len(stamps) == len(set(stamps)) == 400
