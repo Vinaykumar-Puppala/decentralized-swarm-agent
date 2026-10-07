@@ -222,3 +222,6 @@ __marimo__/
 # project
 workspace.sqlite*
 .idea/
+
+# shell crash dumps
+*.stackdump
