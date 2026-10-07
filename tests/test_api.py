@@ -145,6 +145,15 @@ def test_agui_full_run_is_protocol_correct_and_state_reconstructs(client):
     assert cov['total'] == 704 and cov['read'] == sum(b - a + 1 for a, b in cov['ranges']) and cov['read'] > 0
     assert 'api_key' not in json.dumps(state)
 
+    # every model call is an llm_call activity; tokens are in the shared state and match the usage endpoint
+    llm = [e['content'] for e in events if e['type'] == 'ACTIVITY_SNAPSHOT' and e['activityType'] == 'llm_call']
+    assert len(llm) >= 10 and {c['agent'] for c in llm} >= {'agent-1', 'reporter'} and all(c['total_tokens'] > 0 for c in llm)
+    usage = client.get(f"/api/runs/{state['swarmRunId']}/usage").json()
+    assert state['tokens'] == usage and usage['total']['calls'] == len(llm) and usage['total']['total'] == sum(c['total_tokens'] for c in llm)
+    call = client.get(f"/api/runs/{state['swarmRunId']}/llm-calls/{llm[0]['id']}").json()
+    assert call['input'][0]['role'] == 'system' and call['output'] and call['agent'] == llm[0]['agent']
+    assert client.get(f"/api/runs/{state['swarmRunId']}/llm-calls/99999").status_code == 404
+
 
 def test_agui_reattach_replays_a_finished_run(client):
     first = stream_events(client, agui_body(llm={'provider': 'local', 'model': 'fake'}, nAgents=2, steps=2, report=False))

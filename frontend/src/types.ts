@@ -16,6 +16,17 @@ export interface Coverage {
   agents: Record<string, number>
 }
 
+export interface TokenUse { calls: number; errors: number; prompt: number; completion: number; total: number; seconds: number; estimated: boolean }
+export interface Tokens { total: TokenUse; agents: Record<string, TokenUse> }
+
+/** Metadata of one model call (streamed). The full input / output are fetched on demand. */
+export interface LlmCall {
+  id: number; agent: string; step: number | null; purpose: string; model: string; ts: number
+  prompt_tokens: number; completion_tokens: number; total_tokens: number; latency_ms: number
+  status: string; error: string | null; estimated: boolean; in_chars: number; out_chars: number
+}
+export interface LlmCallDetail extends Omit<LlmCall, 'in_chars' | 'out_chars'> { input: { role: string; content: string }[]; output: string }
+
 export interface SwarmState {
   swarmRunId: string
   status: string
@@ -31,6 +42,7 @@ export interface SwarmState {
   counts: { board: number; findings: number; finals: number; queries: number; row_reads: number; cross_reads: number; errors: number; events: number }
   agents: Record<string, AgentState>
   coverage: Record<string, Coverage>
+  tokens?: Tokens
 }
 
 // What the UI builds from the AG-UI event stream.
@@ -41,7 +53,7 @@ export type FeedItem =
   | { kind: 'artifact'; id: string; agent: string; ts: number; artifactId: number; name: string; artifactKind: string; text: string }
   | { kind: 'error'; id: string; agent: string; ts: number; text: string; errorKind: string }
   | { kind: 'access'; id: string; agent: string; ts: number; author: string; artifactId: number; cross: boolean }
-  | { kind: 'lifecycle'; id: string; agent: string; ts: number; phase: 'started' | 'finished' | 'failed' | 'stopped'; text?: string }
+  | { kind: 'lifecycle'; id: string; agent: string; ts: number; phase: 'started' | 'finished' | 'failed' | 'stopped' | 'retry' | 'progress'; text?: string }
 
 export type Phase = 'idle' | 'connecting' | 'running' | 'finished' | 'cancelled' | 'error'
 
@@ -49,6 +61,7 @@ export interface RunData {
   phase: Phase
   error?: string
   feed: FeedItem[]
+  calls: LlmCall[]
   shared: SwarmState | null
   steps: Record<string, string>      // agent -> current step name (from STEP_STARTED / STEP_FINISHED)
   result?: { status?: string; report?: string | null }

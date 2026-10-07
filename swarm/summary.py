@@ -22,6 +22,7 @@ class RunView:
         self.cursor = {}
         self.last_ts = None
         self.agents = {}
+        self.tokens = {}          # agent -> calls / errors / prompt / completion / total tokens / seconds / estimated
         self.counts = {'board': 0, 'findings': 0, 'finals': 0, 'queries': 0, 'row_reads': 0,
                        'cross_reads': 0, 'errors': 0, 'events': 0}
 
@@ -45,6 +46,18 @@ class RunView:
             self.counts['cross_reads'] += int(bool(cross))
             events.append({'type': 'access', 'id': i, 'ts': ts, 'reader': reader, 'artifact_id': aid, 'author': author,
                            'cross_agent': bool(cross), 'action': action})
+        for i, ts, agent, step, purpose, model, pt, ct, tt, ms, status, error, est, in_chars, out_chars in new['llm_calls']:
+            t = self.tokens.setdefault(agent, {'calls': 0, 'errors': 0, 'prompt': 0, 'completion': 0, 'total': 0, 'seconds': 0.0, 'estimated': False})
+            t['calls'] += 1
+            t['errors'] += int(status != 'ok')
+            t['prompt'] += pt or 0
+            t['completion'] += ct or 0
+            t['total'] += tt or 0
+            t['seconds'] = round(t['seconds'] + (ms or 0) / 1000, 1)
+            t['estimated'] = t['estimated'] or bool(est)
+            events.append({'type': 'llm', 'id': i, 'ts': ts, 'agent': agent, 'step': step, 'purpose': purpose, 'model': model, 'prompt_tokens': pt or 0,
+                           'completion_tokens': ct or 0, 'total_tokens': tt or 0, 'latency_ms': ms or 0, 'status': status, 'error': error,
+                           'estimated': bool(est), 'in_chars': in_chars or 0, 'out_chars': out_chars or 0})
         for table, rows in new.items():
             if rows:
                 self.cursor[table] = rows[-1][0]
@@ -73,6 +86,13 @@ class RunView:
         elif event == 'cancelled':
             a['state'] = 'stopped'
 
+    def token_summary(self):
+        keys = ('calls', 'errors', 'prompt', 'completion', 'total')
+        total = {k: sum(t[k] for t in self.tokens.values()) for k in keys}
+        total['seconds'] = round(sum(t['seconds'] for t in self.tokens.values()), 1)
+        total['estimated'] = any(t['estimated'] for t in self.tokens.values())
+        return {'total': total, 'agents': {a: dict(t) for a, t in self.tokens.items()}}
+
     # ---- summary
     def status(self, ws, info, now=None):
         """info: the runs-table row (run_id, ts, objective, config, status, final_report)."""
@@ -94,4 +114,4 @@ class RunView:
                            'action': a['action'], 'summary': a['summary']})
         return {'run_id': run_id, 'status': status, 'active': status in ACTIVE, 'started': ts, 'elapsed': round((now if status in ACTIVE else (self.last_ts or ts)) - ts, 1),
                 'objective': objective, 'config': config, 'counts': dict(self.counts), 'agents': agents,
-                'coverage': coverage, 'report': report}
+                'coverage': coverage, 'report': report, 'tokens': self.token_summary()}

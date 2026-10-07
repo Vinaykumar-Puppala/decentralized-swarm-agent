@@ -1,5 +1,5 @@
 import type { RunData } from '../types'
-import { fmtDuration, useNow } from '../util'
+import { fmtDuration, fmtTokens, useNow } from '../util'
 
 const LABEL: Record<RunData['phase'], string> = {
   idle: 'No run', connecting: 'Connecting…', running: 'Running', finished: 'Finished', cancelled: 'Stopped', error: 'Error',
@@ -17,7 +17,7 @@ export default function RunHeader({ data }: { data: RunData }) {
   const c = s.counts
   const tiles: [string, string | number][] = [
     ['Board posts', c.board], ['Findings', c.findings], ['Final answers', c.finals], ['Data queries', c.queries],
-    ['Row reads', c.row_reads], ['Cross-agent reads', c.cross_reads], ['Errors', c.errors],
+    ['Row reads', c.row_reads], ['Tokens used', s.tokens ? fmtTokens(s.tokens.total.total) : 0], ['Cross-agent reads', c.cross_reads], ['Errors', c.errors],
   ]
   return (
     <header className="runhead">

@@ -1,4 +1,4 @@
-import type { AppConfig, DatasetInfo, LLMForm, RunListItem } from './types'
+import type { AppConfig, DatasetInfo, LLMForm, LlmCallDetail, RunListItem } from './types'
 
 async function json<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -27,3 +27,5 @@ export interface RowsPage { table: string; total: number; offset: number; column
 export const datasetRows = (id: string, table: string, offset: number, limit = 50) =>
   fetch(`/api/datasets/${id}/rows?` + new URLSearchParams({ table, offset: String(offset), limit: String(limit) }))
     .then(r => json<RowsPage>(r))
+
+export const llmCall = (runId: string, id: number) => fetch(`/api/runs/${runId}/llm-calls/${id}`).then(r => json<LlmCallDetail>(r))

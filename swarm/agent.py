@@ -3,7 +3,7 @@ from typing import Any, Optional, TypedDict
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, HumanMessage
-from .llm import make_llm, response_text
+from .llm import TrackedLLM, is_context_error, make_llm
 from .workspace import missing_ranges
 
 SYSTEM = '''You are one of several identical autonomous agents working on a common objective. There is NO coordinator, planner, leader, assigned role, or direct agent-to-agent chat. A shared workspace (message board + artifacts) exists; other agents may have published there. Using it is optional. Decide independently what action is most useful next.
@@ -216,7 +216,7 @@ class Agent:
         self.visibility = visibility
         self.system = system_prompt(visibility)
         self.schema = reply_schema(visibility)
-        self.llm = make_llm(llm_cfg)
+        self.llm = TrackedLLM(make_llm(llm_cfg), llm_cfg, workspace, agent_id)
         self._graph = self._build()
 
     def _peer_pointers(self):
@@ -260,39 +260,41 @@ class Agent:
                          f"Unread row ids: {shown + tail if gaps else 'none, every row has been read'}")
         return "ROW COVERAGE (rows read so far with data_rows by any agent):\n" + "\n".join(lines)
 
-    def _prompt(self, s):
+    def _prompt(self, s, compact=False):
+        """compact=True is the retry after a context-limit error: shorter board / index / history and clipped tool results."""
         final = s['step'] + 1 >= s['max_steps']
         parts = [f"OBJECTIVE:\n{s['objective']}",
                  f"AGENT ID: {self.id}   STEP: {s['step'] + 1} of {s['max_steps']}"]
         if self.dataset is not None:
             parts.append(f"DATA: {self.dataset.name} (already cleaned as noted; analyse it with data_query and data_rows):\n{self.dataset.profile}\n\n{QUERY_HELP}")
             parts.append(self._coverage_text())
-        board = self.ws.recent_board(30)
-        index = self.ws.artifact_index(40)
+        board = self.ws.recent_board(8 if compact else 30)
+        index = self.ws.artifact_index(10 if compact else 40, 80 if compact else 160)
         parts.append("SHARED BOARD (latest):\n" + ("\n".join(f"#{i} [{a}] {c}" for i, a, k, c in board) or "(empty)"))
         parts.append("SHARED ARTIFACT INDEX (id, author, kind, name, preview; read one to get full content):\n" +
                      ("\n".join(f"{i} | {a} | {k} | {n} | {(p or '').replace(chr(10), ' ')}" for i, a, n, k, p in index) or "(empty)"))
         parts += self._peer_pointers()
         if s.get('history'):
-            parts.append("YOUR PREVIOUS STEPS:\n" + "\n".join(f"- step {h['step']}: {h['action']} — {h['summary']}" for h in s['history'][-8:]))
+            parts.append("YOUR PREVIOUS STEPS:\n" + "\n".join(f"- step {h['step']}: {h['action']} — {h['summary']}" for h in s['history'][-(3 if compact else 8):]))
         if s.get('inbox'):
-            parts.append("RESULTS FROM YOUR LAST STEP:\n" + "\n\n".join(s['inbox']))
+            inbox = "\n\n".join(s['inbox'])
+            parts.append("RESULTS FROM YOUR LAST STEP:\n" + (_clip(inbox, 6000) + "\n[results shortened to fit the model's context window]" if compact and len(inbox) > 6000 else inbox))
         if final:
             parts.append("THIS IS YOUR FINAL STEP: publish your best final answer as an artifact (artifact_name + artifact_content, "
                          "citing the computed numbers) and set status to done.")
         parts.append("Reply with exactly one JSON object:\n" + self.schema)
         return "\n\n".join(parts)
 
-    def _decide(self, prompt):
+    def _decide(self, prompt, step=None):
         msgs = [SystemMessage(content=self.system), HumanMessage(content=prompt)]
-        txt = response_text(self.llm.invoke(msgs))
+        txt = self.llm.call(msgs, 'decision', step)
         try:
             return Decision.model_validate(extract_json(txt)), txt
         except (ValueError, ValidationError) as e:
             # One repair attempt: show the model its own reply and the error.
             msgs += [HumanMessage(content=f"Your reply could not be parsed ({e}). Your reply was:\n{_clip(txt, 1500)}\n\n"
                                           f"Reply again with ONLY a valid JSON object matching:\n{self.schema}")]
-            txt = response_text(self.llm.invoke(msgs))
+            txt = self.llm.call(msgs, 'repair', step)
             return Decision.model_validate(extract_json(txt)), txt
 
     def act(self, s):
@@ -302,7 +304,14 @@ class Agent:
             return {**s, 'step': s['step'], 'done': True}
         try:
             self.ws.trace(self.id, 'step_started', {'step': step})
-            d, _ = self._decide(self._prompt(s))
+            try:
+                d, _ = self._decide(self._prompt(s), step)
+            except Exception as e:
+                if not is_context_error(e):
+                    raise
+                # The prompt did not fit the model's context window: say so, then retry once with a shortened prompt.
+                self.ws.trace(self.id, 'context_retry', {'step': step, 'error': _clip(str(e), 300)})
+                d, _ = self._decide(self._prompt(s, compact=True), step)
         except Exception as e:
             errors = s.get('errors', 0) + 1
             msg = f"{type(e).__name__}: {_clip(str(e), 500)}"

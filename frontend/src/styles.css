@@ -93,7 +93,7 @@ button.link { border: 0; background: none; color: var(--accent); padding: 2px 0;
 .progress { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .progress .bar { flex: 1; height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
 .progress .bar div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--info)); transition: width .6s cubic-bezier(.2, .8, .2, 1); }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
 .tile { background: var(--surface-2); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; }
 .tile b { font-size: 20px; font-variant-numeric: tabular-nums; } .tile span { font-size: 11px; color: var(--muted); }
 .tile.bad b { color: var(--bad); }
@@ -182,3 +182,41 @@ tr.seen td { background: color-mix(in srgb, var(--accent) 9%, transparent); } tr
 /* empty state */
 .hero { max-width: 640px; margin: 8vh auto 0; }
 .hero h1 { font-size: 26px; margin-bottom: 12px; } .hero p, .hero li { color: var(--muted); font-size: 15px; } .hero ol { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+
+/* board search, toolbar */
+.toolbar-right { display: flex; gap: 12px; align-items: center; }
+.toolbar-right select { width: auto; }
+.search { width: 220px !important; }
+.chip .count { margin-left: 2px; background: color-mix(in srgb, currentColor 14%, transparent); }
+
+/* llm call log */
+.calls { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.call { --agent: var(--muted); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--agent); border-radius: 10px; animation: enter .3s ease both; overflow: hidden; }
+.call.is-bad { background: var(--bad-bg); border-left-color: var(--bad); }
+.call.open { box-shadow: var(--shadow); }
+.call-row { width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border: 0; background: none; text-align: left; padding: 8px 12px; border-radius: 0; }
+.call-row:hover { background: var(--surface-2); }
+.call-id { min-width: 38px; }
+.call-tokens { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.call-lat { min-width: 52px; text-align: right; }
+.call-detail { border-top: 1px solid var(--border); padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 14px; }
+.call-detail pre { max-height: 320px; margin: 4px 0 0; }
+.call-section-head { display: flex; justify-content: space-between; align-items: center; }
+.call-section-head h2 { margin: 0 0 4px; }
+.msg { margin-top: 8px; }
+.banner.small { padding: 6px 10px; font-size: 12px; }
+
+/* token usage */
+.paper.wide { max-width: none; padding: 14px 18px 16px; }
+.legend { display: flex; gap: 14px; margin: -4px 0 8px; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.sw.in, .usage-bar .in { background: var(--info); } .sw.out, .usage-bar .out { background: var(--accent); }
+.usage { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.usage-name { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.usage-bar { display: flex; height: 12px; border-radius: 99px; overflow: hidden; min-width: 4px; background: var(--surface-2); transition: width .6s cubic-bezier(.2, .8, .2, 1); }
+.usage-bar > div { min-width: 0; transition: flex .6s ease; }
+.usage-num { display: flex; justify-content: space-between; gap: 10px; margin-top: 3px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.plain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.plain li { display: grid; grid-template-columns: 1fr auto 70px; gap: 12px; padding: 7px 0; border-top: 1px solid var(--border); align-items: baseline; }
+.plain li:first-child { border-top: 0; } .plain li b { text-align: right; }

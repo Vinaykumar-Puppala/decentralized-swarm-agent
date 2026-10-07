@@ -8,6 +8,7 @@ Mapping
   audit summary of a decision         -> TEXT_MESSAGE_* (role assistant, name = agent)   [never hidden chain-of-thought]
   data_query / data_rows / read       -> TOOL_CALL_START / ARGS / END, then TOOL_CALL_RESULT
   shared board post / artifact        -> ACTIVITY_SNAPSHOT (activityType board_post / artifact)
+  every model call (tokens, latency)  -> ACTIVITY_SNAPSHOT (llm_call); full input/output via GET /api/runs/{id}/llm-calls/{n}
   artifact access, agent errors       -> CUSTOM (swarm.access / swarm.agent_error / swarm.agent_cancelled)
   counters, per-agent status, row coverage -> STATE_SNAPSHOT, then STATE_DELTA (JSON Patch)
   post-hoc report                     -> TEXT_MESSAGE_* streamed in chunks (name = reporter)
@@ -143,6 +144,7 @@ class AguiTranslator:
             'agents': {a['agent']: {'state': a['state'], 'steps': a['steps'], 'errors': a['errors'], 'rowsRead': a['rows_read'],
                                     'lastTs': self.view.agents[a['agent']]['last_ts'], 'action': a['action'], 'summary': a['summary']}
                        for a in st['agents']},
+            'tokens': st['tokens'],
             'coverage': {t: {'total': c['total'], 'read': c['read'], 'ranges': c['ranges'], 'agents': c['agents']}
                          for t, c in st['coverage'].items()},
         }
@@ -160,6 +162,11 @@ class AguiTranslator:
                                              subagent_run_id=self.sub(e['agent']),
                                              content={'id': e['id'], 'agent': e['agent'], 'name': e['name'], 'kind': e['kind'],
                                                       'content': e['content'], 'ts': ts}))
+        elif kind == 'llm':
+            out.append(ActivitySnapshotEvent(message_id=f"llm-{e['id']}", activity_type='llm_call', replace=True, timestamp=self._ms(ts),
+                                             subagent_run_id=self.sub(e['agent']),
+                                             content={k: e[k] for k in ('id', 'agent', 'step', 'purpose', 'model', 'prompt_tokens', 'completion_tokens',
+                                                                        'total_tokens', 'latency_ms', 'status', 'error', 'estimated', 'in_chars', 'out_chars')} | {'ts': ts}))
         elif kind == 'access':
             out.append(CustomEvent(name='swarm.access', value={k: e[k] for k in ('reader', 'artifact_id', 'author', 'cross_agent')},
                                    subagent_run_id=self.sub(e['reader']), timestamp=self._ms(ts)))
@@ -224,6 +231,8 @@ class AguiTranslator:
             if agent == 'reporter':
                 self.failed_agents.add(agent)
                 out.append(SubagentErrorEvent(subagent_run_id=sid, message=p.get('error') or 'report failed', timestamp=self._ms(ts)))
+        elif ev in ('report_progress', 'context_retry'):
+            out.append(CustomEvent(name=f'swarm.{ev}', value={'agent': agent, **p}, subagent_run_id=sid, timestamp=self._ms(ts)))
         elif ev == 'cancelled':
             out.append(CustomEvent(name='swarm.agent_cancelled', value={'agent': agent, 'step': step}, subagent_run_id=sid, timestamp=self._ms(ts)))
         elif ev == 'run_failed':

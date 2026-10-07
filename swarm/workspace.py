@@ -14,6 +14,10 @@ TABLES = {
                  'action TEXT, summary TEXT, rationale TEXT, confidence REAL, tools TEXT, target TEXT'),
     # Each agent's personal notes to itself. Append-only. Other agents may read them if the run allows it.
     'scratchpad': 'id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, agent TEXT, step INTEGER, note TEXT',
+    # Every model call: the exact messages sent, the reply, token counts (estimated=1 when the provider reported none), timing.
+    'llm_calls': ('id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, agent TEXT, step INTEGER, purpose TEXT, model TEXT, '
+                  'input TEXT, output TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, latency_ms INTEGER, '
+                  'status TEXT, error TEXT, estimated INTEGER, in_chars INTEGER, out_chars INTEGER'),
 }
 
 
@@ -51,6 +55,9 @@ READ_COLS = {   # traces first: a trace can reference rows (artifacts) written j
     'accesses': 'id,ts,reader,artifact_id,author,cross_agent,action',
     'activity': 'id,ts,agent,step,kind,action,summary,rationale,confidence,tools,target',
     'scratchpad': 'id,ts,agent,step,note',
+    # metadata only: the full input / output are fetched on demand (llm_call), not pushed with every poll
+    'llm_calls': ('id,ts,agent,step,purpose,model,prompt_tokens,completion_tokens,total_tokens,latency_ms,status,error,estimated,'
+                  'in_chars,out_chars'),
 }
 
 
@@ -173,6 +180,43 @@ class Workspace:
             return
         return self._exec("INSERT INTO row_views(run_id,ts,agent,tbl,ranges) VALUES(?,?,?,?,?)",
                           (self.run_id, self._ts(), agent, table, json.dumps(to_ranges(row_ids))))
+
+    # ---- model calls and token accounting
+    def log_llm_call(self, agent, step, purpose, model, inp, out, prompt_tokens, completion_tokens, total_tokens, latency_ms,
+                     status='ok', error=None, estimated=False, in_chars=0, out_chars=0):
+        return self._exec(
+            "INSERT INTO llm_calls(run_id,ts,agent,step,purpose,model,input,output,prompt_tokens,completion_tokens,total_tokens,latency_ms,"
+            "status,error,estimated,in_chars,out_chars) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (self.run_id, self._ts(), agent, step, purpose, model, inp, out, prompt_tokens, completion_tokens, total_tokens, latency_ms,
+             status, error, int(bool(estimated)), in_chars, out_chars))
+
+    def llm_call(self, call_id):
+        """One call with its full input (list of {role, content}) and output, or None."""
+        r = self._q("SELECT id,ts,agent,step,purpose,model,input,output,prompt_tokens,completion_tokens,total_tokens,latency_ms,status,error,"
+                    "estimated FROM llm_calls WHERE id=? AND run_id IS ?", (call_id, self.run_id))
+        if not r:
+            return None
+        keys = ('id', 'ts', 'agent', 'step', 'purpose', 'model', 'input', 'output', 'prompt_tokens', 'completion_tokens', 'total_tokens',
+                'latency_ms', 'status', 'error', 'estimated')
+        d = dict(zip(keys, r[0]))
+        try:
+            d['input'] = json.loads(d['input'] or '[]')
+        except ValueError:
+            d['input'] = [{'role': 'user', 'content': d['input']}]
+        d['estimated'] = bool(d['estimated'])
+        return d
+
+    def usage_summary(self):
+        """{'total': {...}, 'agents': {agent: {...}}} with calls, errors, prompt / completion / total tokens, seconds."""
+        agents = {a: {'calls': n, 'errors': e or 0, 'prompt': p or 0, 'completion': c or 0, 'total': t or 0, 'seconds': round((ms or 0) / 1000, 1),
+                      'estimated': bool(est)}
+                  for a, n, e, p, c, t, ms, est in self._q(
+                      "SELECT agent,COUNT(*),SUM(status!='ok'),SUM(prompt_tokens),SUM(completion_tokens),SUM(total_tokens),SUM(latency_ms),MAX(estimated) "
+                      "FROM llm_calls WHERE run_id IS ? GROUP BY agent", (self.run_id,))}
+        total = {k: sum(a[k] for a in agents.values()) for k in ('calls', 'errors', 'prompt', 'completion', 'total')}
+        total['seconds'] = round(sum(a['seconds'] for a in agents.values()), 1)
+        total['estimated'] = any(a['estimated'] for a in agents.values())
+        return {'total': total, 'agents': agents}
 
     # ---- activity log and scratchpads
     def log_activity(self, agent, step, kind, action='', summary='', rationale='', confidence=None, tools=None, target=None):

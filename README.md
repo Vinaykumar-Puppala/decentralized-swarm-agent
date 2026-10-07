@@ -48,7 +48,15 @@ An API key typed in the UI is sent to the server for that run only. It is not st
 | counters, per-agent status, row coverage | `STATE_SNAPSHOT`, then `STATE_DELTA` (JSON Patch) |
 | post-hoc report | `TEXT_MESSAGE_*` streamed in chunks (`name` = reporter) |
 
+Every model call is also an `ACTIVITY_SNAPSHOT` (`llm_call`: agent, step, purpose, tokens, latency, status). The full messages sent and the reply are fetched on demand with `GET /api/runs/{id}/llm-calls/{n}`, and `GET /api/runs/{id}/usage` returns token totals. The shared state carries `tokens` (overall and per agent).
+
 Other endpoints: `GET /api/config`, `POST /api/llm/test`, `POST /api/datasets` (multipart, several files), `GET /api/datasets/{id}/rows`, `GET /api/runs`, `GET /api/runs/{id}`, `POST /api/runs/{id}/stop`. Interactive docs at `/docs`. Only one run is active at a time.
+
+## Model-call log, tokens and context limits
+
+- **LLM calls tab**: every call to the model (agent decisions, JSON-repair retries, report passes) with the exact messages sent and the reply, tokens in / out, latency and errors. Stored in the `llm_calls` table of `workspace.sqlite`.
+- **Tokens tab**: totals, tokens per agent (prompt vs completion), where the tokens went, largest prompt, slowest call. Counts come from the provider's usage data; when a provider reports none (some local servers), they are estimated at about 4 characters per token and marked *est.*
+- **Context-limit errors**: the reporter splits what it must summarise into pieces of at most `CONTEXT_CHARS` characters (default 24000), condenses each, merges the notes (repeating if still too long) and writes the report from that. If the model still rejects a call as too long, the pieces are halved and it tries again. An agent whose prompt is rejected retries once with a shorter prompt (fewer board posts, shorter results). Lower `CONTEXT_CHARS` for models with small windows.
 
 ## How the agents work
 

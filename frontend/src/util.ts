@@ -49,3 +49,7 @@ export function useTheme() {
   }, [theme])
   return [theme, setTheme] as const
 }
+
+export const fmtNum = (n: number) => n.toLocaleString()
+export const fmtTokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)}k` : n.toLocaleString())
+export const fmtMs = (ms: number) => (ms >= 60000 ? `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`)

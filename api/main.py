@@ -10,6 +10,8 @@
   POST   /api/runs                         start a run (returns immediately; agents work in a background thread)
   GET    /api/runs/{id}                    summary: status, counters, agents, row coverage, report
   POST   /api/runs/{id}/stop
+  GET    /api/runs/{id}/llm-calls/{n}     full input + output of one model call
+  GET    /api/runs/{id}/usage             token totals per agent and overall
   POST   /agui                             AG-UI endpoint (https://docs.ag-ui.com): body = RunAgentInput, response = SSE
                                            stream of AG-UI events. forwardedProps starts a run
                                            ({llm, nAgents, steps, datasetId, report}) or re-attaches to one ({attachRunId}).
@@ -71,7 +73,7 @@ def build_cfg(req: LLMIn) -> LLMConfig:
         model=(req.model or (env.model if env.provider == provider else '')).strip(),
         api_key=(req.api_key or os.getenv('API_KEY') or (os.getenv(key_env) if key_env else '') or '').strip(),
         base_url=(req.base_url or (env.base_url if env.provider == provider else '')).strip(),
-        temperature=req.temperature, max_tokens=env.max_tokens, timeout=env.timeout)
+        temperature=req.temperature, max_tokens=env.max_tokens, timeout=env.timeout, context_chars=env.context_chars)
 
 
 class _Upload:
@@ -219,6 +221,20 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         view = RunView()
         view.update(ws)
         return view.status(ws, ws.run_info())
+
+    @app.get('/api/runs/{run_id}/llm-calls/{call_id}')
+    def llm_call(run_id: str, call_id: int):
+        """One model call with the exact messages sent and the reply received."""
+        ws, _ = get_run(run_id)
+        call = ws.llm_call(call_id)
+        if call is None:
+            raise HTTPException(404, 'no such model call in this run')
+        return call
+
+    @app.get('/api/runs/{run_id}/usage')
+    def usage(run_id: str):
+        ws, _ = get_run(run_id)
+        return ws.usage_summary()
 
     @app.post('/api/runs/{run_id}/stop')
     def stop(run_id: str):

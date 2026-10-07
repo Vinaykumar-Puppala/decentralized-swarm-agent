@@ -3,6 +3,8 @@ import { getConfig, listRuns, stopRun } from './api'
 import Agents from './components/Agents'
 import DataBrowser from './components/DataBrowser'
 import DataPanel from './components/DataPanel'
+import LlmLog from './components/LlmLog'
+import Tokens from './components/Tokens'
 import Feed from './components/Feed'
 import History from './components/History'
 import ModelPanel from './components/ModelPanel'
@@ -15,8 +17,8 @@ import type { AppConfig, DatasetInfo, LLMForm, RunForm, RunListItem } from './ty
 import ThemeToggle from './components/ThemeToggle'
 import { useLocalStorage, useTheme } from './util'
 
-type Tab = 'feed' | 'agents' | 'board' | 'artifacts' | 'data' | 'report'
-const TABS: [Tab, string][] = [['feed', 'Live feed'], ['agents', 'Agents'], ['board', 'Board'], ['artifacts', 'Artifacts'], ['data', 'Data'], ['report', 'Report']]
+type Tab = 'feed' | 'agents' | 'board' | 'artifacts' | 'llm' | 'tokens' | 'data' | 'report'
+const TABS: [Tab, string][] = [['feed', 'Live feed'], ['agents', 'Agents'], ['board', 'Board'], ['artifacts', 'Artifacts'], ['llm', 'LLM calls'], ['tokens', 'Tokens'], ['data', 'Data'], ['report', 'Report']]
 
 type SavedLLM = Omit<LLMForm, 'api_key'>
 
@@ -60,6 +62,7 @@ export default function App() {
   const agents = useMemo(() => Object.keys(data.shared?.agents ?? {}), [data.shared])
   const reportReady = !!(data.result?.report || data.feed.some(f => f.kind === 'message' && f.agent === 'reporter'))
   const currentRun = data.shared?.swarmRunId
+  const boardCount = useMemo(() => data.feed.filter(f => f.kind === 'board').length, [data.feed])
 
   async function stop() {
     if (!currentRun) return
@@ -102,7 +105,8 @@ export default function App() {
               {TABS.map(([id, label]) => (
                 <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'tab on' : 'tab'} onClick={() => setTab(id)}>
                   {label}{id === 'report' && reportReady && <span className="dot ok" />}
-                  {id === 'board' && data.shared ? <span className="count">{data.shared.counts.board}</span> : null}
+                  {id === 'board' && boardCount ? <span className="count">{boardCount}</span> : null}
+                  {id === 'llm' && data.calls.length ? <span className="count">{data.calls.length}</span> : null}
                   {id === 'agents' && agents.length ? <span className="count">{agents.length}</span> : null}
                 </button>
               ))}
@@ -112,6 +116,8 @@ export default function App() {
               {tab === 'agents' && <Agents shared={data.shared} steps={data.steps} active={swarm.busy} />}
               {tab === 'board' && <BoardView feed={data.feed} />}
               {tab === 'artifacts' && <ArtifactsView feed={data.feed} />}
+              {tab === 'llm' && <LlmLog calls={data.calls} runId={currentRun} />}
+              {tab === 'tokens' && <Tokens shared={data.shared} calls={data.calls} />}
               {tab === 'data' && <DataBrowser dataset={dataset} shared={data.shared} />}
               {tab === 'report' && <Report data={data} />}
             </div>

@@ -1,5 +1,5 @@
 import type { SwarmState } from '../types'
-import { agentColor, fmtDuration, useNow } from '../util'
+import { agentColor, fmtDuration, fmtTokens, useNow } from '../util'
 
 const initial = (name: string) => (name === 'reporter' ? 'R' : name.replace(/\D/g, '') || name[0].toUpperCase())
 
@@ -15,6 +15,7 @@ export default function Agents({ shared, steps, active }: { shared: SwarmState |
         const finished = ['finished', 'failed', 'stopped'].includes(a.state)
         const idle = !finished && a.lastTs ? now - a.lastTs : null
         const isReporter = name === 'reporter'
+        const tok = shared.tokens?.agents[name]
         return (
           <article key={name} className={`agent${working ? ' working' : ''}${a.state === 'failed' ? ' failed' : ''}`} style={{ '--agent': color } as React.CSSProperties}>
             <header>
@@ -33,6 +34,7 @@ export default function Agents({ shared, steps, active }: { shared: SwarmState |
             )}
             <div className="stats">
               {!isReporter && <div><b>{a.rowsRead.toLocaleString()}</b><span>rows read</span></div>}
+              {tok && <div title={`${tok.prompt.toLocaleString()} in, ${tok.completion.toLocaleString()} out, ${tok.calls} calls`}><b>{fmtTokens(tok.total)}</b><span>tokens</span></div>}
               <div className={a.errors ? 'bad' : ''}><b>{a.errors}</b><span>errors</span></div>
               {idle !== null && <div><b>{fmtDuration(idle)}</b><span>since last</span></div>}
             </div>

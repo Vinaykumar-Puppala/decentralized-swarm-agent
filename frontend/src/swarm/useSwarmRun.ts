@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { HttpAgent, type AgentSubscriber } from '@ag-ui/client'
-import type { FeedItem, LLMForm, RunData, RunForm, SwarmState } from '../types'
+import type { FeedItem, LLMForm, LlmCall, RunData, RunForm, SwarmState } from '../types'
 
 // The AG-UI event fields we read. The stream carries more; unknown event types are ignored.
 type Ev = { type: string; timestamp?: number; subagentRunId?: string } & Record<string, any>
@@ -9,17 +9,19 @@ const uuid = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(
 const agentOf = (e: Ev): string => e.name ?? (e.subagentRunId ? String(e.subagentRunId).split(':').pop()! : 'swarm')
 const tsOf = (e: Ev) => (e.timestamp ? e.timestamp / 1000 : Date.now() / 1000)
 
-const empty = (phase: RunData['phase'] = 'idle'): RunData => ({ phase, feed: [], shared: null, steps: {}, eventCount: 0 })
+const empty = (phase: RunData['phase'] = 'idle'): RunData => ({ phase, feed: [], calls: [], shared: null, steps: {}, eventCount: 0 })
 
 /** Fold a batch of AG-UI events into the run data. Pure: copies what it changes, so React sees new references. */
 export function applyEvents(prev: RunData, events: Ev[]): RunData {
-  const s: RunData = { ...prev, feed: prev.feed.slice(), steps: { ...prev.steps }, eventCount: prev.eventCount + events.length }
+  const s: RunData = { ...prev, feed: prev.feed.slice(), calls: prev.calls.slice(), steps: { ...prev.steps }, eventCount: prev.eventCount + events.length }
   const at = new Map<string, number>()
   s.feed.forEach((f, i) => at.set(f.id, i))
   const put = (item: FeedItem) => {
     const i = at.get(item.id)
     if (i === undefined) { at.set(item.id, s.feed.length); s.feed.push(item) } else s.feed[i] = item
   }
+  const callAt = new Map<number, number>()
+  s.calls.forEach((c, i) => callAt.set(c.id, i))
   const edit = (id: string, fn: (f: FeedItem) => FeedItem) => {
     const i = at.get(id)
     if (i !== undefined) s.feed[i] = fn(s.feed[i])
@@ -69,6 +71,12 @@ export function applyEvents(prev: RunData, events: Ev[]): RunData {
         break
 
       case 'ACTIVITY_SNAPSHOT':
+        if (e.activityType === 'llm_call') {
+          const c = { ...e.content, ts } as LlmCall
+          const i = callAt.get(c.id)
+          if (i === undefined) { callAt.set(c.id, s.calls.length); s.calls.push(c) } else s.calls[i] = c
+          break
+        }
         if (e.activityType === 'board_post')
           put({ kind: 'board', id: e.messageId, agent: e.content.agent, ts, text: e.content.content })
         else if (e.activityType === 'artifact')
@@ -82,6 +90,12 @@ export function applyEvents(prev: RunData, events: Ev[]): RunData {
         else if (e.name === 'swarm.access')
           put({ kind: 'access', id: `acc-${s.feed.length}-${ts}`, agent: e.value.reader, ts, author: e.value.author,
                 artifactId: e.value.artifact_id, cross: !!e.value.cross_agent })
+        else if (e.name === 'swarm.context_retry')
+          put({ kind: 'lifecycle', id: `ctx-${s.feed.length}-${ts}`, agent: e.value.agent, ts, phase: 'retry',
+                text: e.value.chunk_chars ? `context limit hit, retrying with ${e.value.chunk_chars.toLocaleString()}-character pieces` : 'context limit hit, retrying with a shorter prompt' })
+        else if (e.name === 'swarm.report_progress')
+          put({ kind: 'lifecycle', id: `rp-${s.feed.length}-${ts}`, agent: e.value.agent, ts, phase: 'progress',
+                text: e.value.phase === 'condensing' ? `condensing the material: round ${e.value.round}, ${e.value.parts} parts` : 'writing the final report' })
         else if (e.name === 'swarm.agent_cancelled')
           put({ kind: 'lifecycle', id: `stop-${e.value.agent}`, agent: e.value.agent, ts, phase: 'stopped' })
         break
