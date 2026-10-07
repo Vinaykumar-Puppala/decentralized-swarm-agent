@@ -8,6 +8,12 @@ TABLES = {
     'traces': 'id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, agent TEXT, event TEXT, payload TEXT',
     # which data rows each agent has looked at, stored as inclusive id ranges: [[start, end], ...]
     'row_views': 'id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, agent TEXT, tbl TEXT, ranges TEXT',
+    # Shared activity log: one entry per agent step (what it tried, why, what came back), plus one entry each time an
+    # agent chooses to read the log or someone's scratchpad (kind 'read'; `target` says what was read).
+    'activity': ('id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, agent TEXT, step INTEGER, kind TEXT, '
+                 'action TEXT, summary TEXT, rationale TEXT, confidence REAL, tools TEXT, target TEXT'),
+    # Each agent's personal notes to itself. Append-only. Other agents may read them if the run allows it.
+    'scratchpad': 'id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, agent TEXT, step INTEGER, note TEXT',
 }
 
 
@@ -43,6 +49,8 @@ READ_COLS = {   # traces first: a trace can reference rows (artifacts) written j
     'board': 'id,ts,agent,kind,content',
     'artifacts': 'id,ts,agent,name,kind,content',
     'accesses': 'id,ts,reader,artifact_id,author,cross_agent,action',
+    'activity': 'id,ts,agent,step,kind,action,summary,rationale,confidence,tools,target',
+    'scratchpad': 'id,ts,agent,step,note',
 }
 
 
@@ -165,6 +173,40 @@ class Workspace:
             return
         return self._exec("INSERT INTO row_views(run_id,ts,agent,tbl,ranges) VALUES(?,?,?,?,?)",
                           (self.run_id, self._ts(), agent, table, json.dumps(to_ranges(row_ids))))
+
+    # ---- activity log and scratchpads
+    def log_activity(self, agent, step, kind, action='', summary='', rationale='', confidence=None, tools=None, target=None):
+        """Append one entry to the shared activity log. `tools` is a list of {tool, args, outcome, ok}."""
+        return self._exec(
+            "INSERT INTO activity(run_id,ts,agent,step,kind,action,summary,rationale,confidence,tools,target) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (self.run_id, self._ts(), agent, step, kind, _text(action), _text(summary), _text(rationale), confidence,
+             json.dumps(tools or [], default=str), target))
+
+    def activity_entries(self, agent=None, limit=10, kinds=None):
+        """Most recent entries (oldest first among them), optionally for one agent / some kinds."""
+        sql, args = "SELECT id,ts,agent,step,kind,action,summary,rationale,confidence,tools,target FROM activity WHERE run_id IS ?", [self.run_id]
+        if agent:
+            sql, args = sql + " AND agent=?", args + [agent]
+        if kinds:
+            sql, args = sql + " AND kind IN (%s)" % ",".join("?" * len(kinds)), args + list(kinds)
+        rows = self._q(sql + " ORDER BY id DESC LIMIT ?", tuple(args + [int(limit)]))
+        return rows[::-1]
+
+    def activity_overview(self):
+        """{agent: number of step entries} for the 'there is a log you may read' pointer in prompts."""
+        return dict(self._q("SELECT agent,COUNT(*) FROM activity WHERE run_id IS ? AND kind='step' GROUP BY agent", (self.run_id,)))
+
+    def scratch_add(self, agent, step, note):
+        return self._exec("INSERT INTO scratchpad(run_id,ts,agent,step,note) VALUES(?,?,?,?,?)",
+                          (self.run_id, self._ts(), agent, step, _text(note)))
+
+    def scratch_notes(self, agent):
+        return self._q("SELECT id,ts,step,note FROM scratchpad WHERE run_id IS ? AND agent=? ORDER BY id", (self.run_id, agent))
+
+    def scratch_overview(self):
+        """{agent: (notes, characters)}"""
+        return {a: (n, c or 0) for a, n, c in self._q(
+            "SELECT agent,COUNT(*),SUM(LENGTH(note)) FROM scratchpad WHERE run_id IS ? GROUP BY agent", (self.run_id,))}
 
     # ---- reads
     def coverage(self, table, agent=None):

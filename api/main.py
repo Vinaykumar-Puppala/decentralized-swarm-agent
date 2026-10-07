@@ -58,6 +58,7 @@ class RunIn(BaseModel):
     steps: int = Field(10, ge=1, le=40)
     dataset_id: Optional[str] = None
     report: bool = True
+    visibility: str = 'full'      # isolated | log | full: how much of each other's work agents may choose to read
 
 
 def build_cfg(req: LLMIn) -> LLMConfig:
@@ -200,7 +201,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             busy = active_run()
             if busy:
                 raise HTTPException(409, f'run {busy} is still active; stop it or wait for it to finish')
-            run_id, thread = launch(req.objective, cfg, req.n_agents, req.steps, db_path, collection, do_synthesis=req.report)
+            try:
+                run_id, thread = launch(req.objective, cfg, req.n_agents, req.steps, db_path, collection,
+                                        do_synthesis=req.report, visibility=req.visibility)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
             threads[run_id] = thread
         return run_id
 
@@ -246,7 +251,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             else:                                             # start a new run from the user's message + forwardedProps
                 text = next((m.content for m in reversed(inp.messages) if m.role == 'user' and isinstance(getattr(m, 'content', None), str)), '')
                 req = RunIn(objective=text or '', llm=LLMIn(**(fp.get('llm') or {})), n_agents=fp.get('nAgents', 5),
-                            steps=fp.get('steps', 10), dataset_id=fp.get('datasetId'), report=fp.get('report', True))
+                            steps=fp.get('steps', 10), dataset_id=fp.get('datasetId'), report=fp.get('report', True), visibility=fp.get('visibility', 'full'))
                 swarm_run = await asyncio.to_thread(begin_run, req)
         except HTTPException as e:
             return failed(str(e.detail), f'http_{e.status_code}')

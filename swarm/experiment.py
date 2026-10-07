@@ -1,7 +1,7 @@
 import random, threading
 from concurrent.futures import ThreadPoolExecutor
 from langchain_core.messages import SystemMessage, HumanMessage
-from .agent import run_agent
+from .agent import VISIBILITY, run_agent
 from .llm import LLMConfig, make_llm, response_text
 from .workspace import Workspace
 
@@ -29,12 +29,12 @@ def synthesize(ws, objective, llm_cfg, budget=40000):
     return response_text(make_llm(llm_cfg).invoke([SystemMessage(content=REPORTER), HumanMessage(content=prompt)]))
 
 
-def _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter):
+def _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter, visibility='full'):
     """Run all agents for an already-created run, then (optionally) the observer report. Never raises."""
     try:
         with ThreadPoolExecutor(max_workers=n_agents) as ex:
             futures = [ex.submit(run_agent, f'agent-{i + 1}', objective, ws, llm_cfg, steps, dataset,
-                                 random.uniform(0, max_start_jitter) if i else 0.0)
+                                 random.uniform(0, max_start_jitter) if i else 0.0, visibility)
                        for i in range(n_agents)]
             results = [f.result() for f in futures]  # run_agent never raises
         cancelled = ws.is_cancelled()
@@ -55,35 +55,37 @@ def _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max
         raise
 
 
-def _setup(objective, llm_cfg, n_agents, steps, db_path, dataset):
+def _setup(objective, llm_cfg, n_agents, steps, db_path, dataset, visibility='full'):
+    if visibility not in VISIBILITY:
+        raise ValueError(f"visibility must be one of {VISIBILITY}")
     llm_cfg = (llm_cfg or LLMConfig.from_env()).validate()
     base = Workspace(db_path)
-    config = {'llm': llm_cfg.public(), 'n_agents': n_agents, 'steps': steps,
+    config = {'llm': llm_cfg.public(), 'n_agents': n_agents, 'steps': steps, 'visibility': visibility,
               'dataset': getattr(dataset, 'name', None),
               'tables': {n: len(d.df) for n, d in dataset.tables.items()} if dataset is not None else {}}
     return base, base.start_run(objective, config), llm_cfg
 
 
 def run(objective, llm_cfg=None, n_agents=5, steps=6, db_path='workspace.sqlite', dataset=None,
-        do_synthesis=True, max_start_jitter=3.0):
+        do_synthesis=True, max_start_jitter=3.0, visibility='full'):
     """Blocking run in its own run_id. Returns {'run_id', 'results', 'final_report'}.
     Agents start with a small random delay so they don't all act on an identical empty workspace."""
-    base, ws, llm_cfg = _setup(objective, llm_cfg, n_agents, steps, db_path, dataset)
+    base, ws, llm_cfg = _setup(objective, llm_cfg, n_agents, steps, db_path, dataset, visibility)
     try:
-        return _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter)
+        return _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter, visibility)
     finally:
         base.close()
 
 
 def launch(objective, llm_cfg=None, n_agents=5, steps=6, db_path='workspace.sqlite', dataset=None,
-           do_synthesis=True, max_start_jitter=3.0):
+           do_synthesis=True, max_start_jitter=3.0, visibility='full'):
     """Non-blocking: start the run in a background thread and return (run_id, thread) immediately,
     so a UI can poll the workspace while agents work."""
-    base, ws, llm_cfg = _setup(objective, llm_cfg, n_agents, steps, db_path, dataset)
+    base, ws, llm_cfg = _setup(objective, llm_cfg, n_agents, steps, db_path, dataset, visibility)
 
     def target():
         try:
-            _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter)
+            _execute(ws, objective, llm_cfg, n_agents, steps, dataset, do_synthesis, max_start_jitter, visibility)
         except BaseException:
             pass  # already recorded as a run_failed trace
         finally:

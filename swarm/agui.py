@@ -193,6 +193,8 @@ class AguiTranslator:
             mid = f"{agent}-s{step}-msg"
             conf = f" (confidence {p['confidence']:.2f})" if p.get('confidence') is not None else ''
             text = f"{p.get('action') or 'step'}{conf}" + (f" — {p['audit_summary']}" if p.get('audit_summary') else '')
+            if p.get('rationale'):                  # the agent's written explanation of why it chose this step
+                text += f"\nWhy: {p['rationale']}"
             out += list(self._text(mid, agent, text, ts))
             if p.get('data_query'):
                 out += list(self._tool_call(f"{agent}-s{step}-data_query", 'data_query', p['data_query'], mid, agent, ts))
