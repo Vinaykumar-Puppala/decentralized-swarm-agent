@@ -49,7 +49,7 @@ export function applyEvents(prev: RunData, events: Ev[]): RunData {
       case 'STEP_FINISHED': if (s.steps[agentOf(e)] === e.stepName) delete s.steps[agentOf(e)]; break
 
       case 'TEXT_MESSAGE_START':
-        put({ kind: 'message', id: e.messageId, agent: e.name ?? agentOf(e), ts, text: '', streaming: true })
+        put({ kind: 'message', id: e.messageId, agent: e.name ?? agentOf(e), ts, text: '', streaming: true, at: Date.now() })
         break
       case 'TEXT_MESSAGE_CONTENT':
         edit(e.messageId, f => (f.kind === 'message' ? { ...f, text: f.text + e.delta } : f))

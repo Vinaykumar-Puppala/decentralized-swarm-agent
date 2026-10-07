@@ -34,3 +34,18 @@ export function useLocalStorage<T>(key: string, initial: T) {
   useEffect(() => { try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* private mode */ } }, [key, value])
   return [value, setValue] as const
 }
+
+export type Theme = 'system' | 'light' | 'dark'
+
+/** light / dark / follow-the-OS; the choice is saved and applied as data-theme on <html>. */
+export function useTheme() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    try { const t = localStorage.getItem('swarm.theme'); return t === 'light' || t === 'dark' ? t : 'system' } catch { return 'system' }
+  })
+  useEffect(() => {
+    const el = document.documentElement
+    if (theme === 'system') el.removeAttribute('data-theme'); else el.dataset.theme = theme
+    try { if (theme === 'system') localStorage.removeItem('swarm.theme'); else localStorage.setItem('swarm.theme', theme) } catch { /* private mode */ }
+  }, [theme])
+  return [theme, setTheme] as const
+}

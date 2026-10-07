@@ -12,7 +12,8 @@ import RunPanel from './components/RunPanel'
 import { ArtifactsView, BoardView } from './components/Workspace'
 import { useSwarmRun } from './swarm/useSwarmRun'
 import type { AppConfig, DatasetInfo, LLMForm, RunForm, RunListItem } from './types'
-import { useLocalStorage } from './util'
+import ThemeToggle from './components/ThemeToggle'
+import { useLocalStorage, useTheme } from './util'
 
 type Tab = 'feed' | 'agents' | 'board' | 'artifacts' | 'data' | 'report'
 const TABS: [Tab, string][] = [['feed', 'Live feed'], ['agents', 'Agents'], ['board', 'Board'], ['artifacts', 'Artifacts'], ['data', 'Data'], ['report', 'Report']]
@@ -29,6 +30,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('feed')
   const [stopping, setStopping] = useState(false)
   const [notice, setNotice] = useState('')
+  const [theme, setTheme] = useTheme()
 
   const refreshRuns = useCallback(() => { listRuns().then(setRuns).catch(() => undefined) }, [])
   const swarm = useSwarmRun(refreshRuns)
@@ -70,7 +72,8 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden><circle cx="9" cy="10" r="4" fill="#6d5efc" /><circle cx="23" cy="10" r="4" fill="#22b8a6" /><circle cx="16" cy="23" r="4" fill="#f5a524" /><path d="M9 10 23 10 16 23Z" fill="none" stroke="currentColor" strokeOpacity=".35" /></svg>
-          <div><b>Decentralized Swarm</b><span className="muted small">no orchestrator · shared workspace · AG-UI</span></div>
+          <div className="brand-text"><b>Decentralized Swarm</b><span className="muted small">no orchestrator · shared workspace</span></div>
+          <ThemeToggle theme={theme} onChange={setTheme} />
         </div>
         <ModelPanel cfg={cfg} value={llm} onChange={v => { const { api_key, ...rest } = v; setApiKey(api_key); setSaved(rest) }} />
         <DataPanel dataset={dataset} onDataset={setDataset} locked={swarm.busy} />
@@ -104,8 +107,8 @@ export default function App() {
                 </button>
               ))}
             </nav>
-            <div className="tabpanel" role="tabpanel">
-              {tab === 'feed' && <Feed feed={data.feed} agents={agents} />}
+            <div className="tabpanel" role="tabpanel" key={tab}>
+              {tab === 'feed' && <Feed feed={data.feed} agents={agents} live={swarm.busy} />}
               {tab === 'agents' && <Agents shared={data.shared} steps={data.steps} active={swarm.busy} />}
               {tab === 'board' && <BoardView feed={data.feed} />}
               {tab === 'artifacts' && <ArtifactsView feed={data.feed} />}

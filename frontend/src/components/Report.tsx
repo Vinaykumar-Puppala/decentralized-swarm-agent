@@ -1,5 +1,5 @@
 import type { FeedItem, RunData } from '../types'
-import { agentColor } from '../util'
+import { Who } from './bits'
 import Markdown from './Markdown'
 
 export default function Report({ data }: { data: RunData }) {
@@ -15,8 +15,8 @@ export default function Report({ data }: { data: RunData }) {
         : <p className="empty">{running ? 'The report appears here when every agent has finished.' : 'No report was written for this run.'}</p>}
       {finals.length > 0 && <h3>Final answers from the agents</h3>}
       {finals.map(f => (
-        <details key={f.id} className="item card block">
-          <summary><span className="who" style={{ color: agentColor(f.agent) }}><span className="swatch" style={{ background: agentColor(f.agent) }} />{f.agent}</span> {f.name}</summary>
+        <details key={f.id} className="item final">
+          <summary><Who agent={f.agent} /><b>{f.name}</b></summary>
           <Markdown>{f.text}</Markdown>
         </details>
       ))}

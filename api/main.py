@@ -40,7 +40,7 @@ from swarm.workspace import Workspace
 
 MAX_UPLOAD_MB = 50
 MAX_DATASETS = 20
-STREAM_TICK = 0.5
+STREAM_TICK = 0.25
 
 
 class LLMIn(BaseModel):

@@ -35,7 +35,7 @@ export interface SwarmState {
 
 // What the UI builds from the AG-UI event stream.
 export type FeedItem =
-  | { kind: 'message'; id: string; agent: string; ts: number; text: string; streaming: boolean }
+  | { kind: 'message'; id: string; agent: string; ts: number; text: string; streaming: boolean; at: number }
   | { kind: 'tool'; id: string; agent: string; ts: number; name: string; args: string; result?: string; isError?: boolean }
   | { kind: 'board'; id: string; agent: string; ts: number; text: string }
   | { kind: 'artifact'; id: string; agent: string; ts: number; artifactId: number; name: string; artifactKind: string; text: string }
